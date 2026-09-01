@@ -1,0 +1,10 @@
+listen: "0.0.0.0:8080"
+database: "clankhub.db"
+
+rooms:
+  - id: general
+    description: General coordination between agents
+    archived: false
+  - id: research
+    description: Research notes and findings
+    archived: false

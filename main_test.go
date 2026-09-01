@@ -1,0 +1,181 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"html/template"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func testServer(t *testing.T) *Server {
+	t.Helper()
+	store, err := openStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.syncRooms([]RoomConfig{
+		{ID: "general", Description: "General", Archived: false},
+		{ID: "old", Description: "Archived room", Archived: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := templateForTests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Server{store: store, tmpl: tmpl}
+}
+
+func templateForTests() (*template.Template, error) {
+	return template.ParseFS(webFiles, "web/index.html", "web/messages.html")
+}
+
+func doJSON(t *testing.T, handler http.Handler, method, path, token string, body any, target any) *httptest.ResponseRecorder {
+	t.Helper()
+	var requestBody io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requestBody = bytes.NewReader(encoded)
+	}
+	request := httptest.NewRequest(method, path, requestBody)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if target != nil {
+		if err := json.Unmarshal(response.Body.Bytes(), target); err != nil {
+			t.Fatalf("decode response %d: %v; body=%s", response.Code, err, response.Body.String())
+		}
+	}
+	return response
+}
+
+func TestAPIFlow(t *testing.T) {
+	server := testServer(t)
+	handler := server.routes()
+
+	if response := doJSON(t, handler, http.MethodGet, "/healthz", "", nil, nil); response.Code != http.StatusOK {
+		t.Fatalf("health status = %d", response.Code)
+	}
+	if response := doJSON(t, handler, http.MethodGet, "/api/rooms", "", nil, nil); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated rooms status = %d", response.Code)
+	}
+
+	const token = "agent-token-for-tests"
+	var agent Agent
+	if response := doJSON(t, handler, http.MethodPost, "/api/agents/register", "", registerRequest{Name: "alpha", Token: token}, &agent); response.Code != http.StatusCreated {
+		t.Fatalf("register status = %d", response.Code)
+	}
+	if agent.Name != "alpha" || agent.ID == "" {
+		t.Fatalf("unexpected agent: %+v", agent)
+	}
+	if response := doJSON(t, handler, http.MethodPost, "/api/agents/register", "", registerRequest{Name: "alpha", Token: "another-token"}, nil); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate name status = %d", response.Code)
+	}
+
+	var rooms struct {
+		Rooms []Room `json:"rooms"`
+	}
+	if response := doJSON(t, handler, http.MethodGet, "/api/rooms", token, nil, &rooms); response.Code != http.StatusOK {
+		t.Fatalf("rooms status = %d", response.Code)
+	}
+	if len(rooms.Rooms) != 2 || !rooms.Rooms[1].Archived {
+		t.Fatalf("unexpected rooms: %+v", rooms.Rooms)
+	}
+
+	var posted Message
+	if response := doJSON(t, handler, http.MethodPost, "/api/messages", token, postMessageRequest{RoomID: "general", Body: "hello"}, &posted); response.Code != http.StatusCreated {
+		t.Fatalf("post status = %d", response.Code)
+	}
+	if posted.AgentName != "alpha" || posted.Body != "hello" {
+		t.Fatalf("unexpected message: %+v", posted)
+	}
+	if response := doJSON(t, handler, http.MethodPost, "/api/messages", "wrong-token", postMessageRequest{RoomID: "general", Body: "nope"}, nil); response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token status = %d", response.Code)
+	}
+
+	var page MessagePage
+	if response := doJSON(t, handler, http.MethodGet, "/api/rooms/general/messages?since=2000-01-01T00%3A00%3A00Z", token, nil, &page); response.Code != http.StatusOK {
+		t.Fatalf("read status = %d", response.Code)
+	}
+	if page.ReadAt == "" || len(page.Messages) != 1 || page.Messages[0].ID != posted.ID || page.NextSince == "" || page.NextAfter == "" {
+		t.Fatalf("unexpected page: %+v", page)
+	}
+	var nextPage MessagePage
+	if response := doJSON(t, handler, http.MethodGet, "/api/rooms/general/messages?since="+page.NextSince+"&after_id="+page.NextAfter, token, nil, &nextPage); response.Code != http.StatusOK {
+		t.Fatalf("cursor read status = %d", response.Code)
+	} else if len(nextPage.Messages) != 0 {
+		t.Fatalf("cursor returned messages: %+v", nextPage.Messages)
+	}
+
+	if response := doJSON(t, handler, http.MethodPost, "/api/messages", token, postMessageRequest{RoomID: "old", Body: "nope"}, nil); response.Code != http.StatusConflict {
+		t.Fatalf("archived post status = %d", response.Code)
+	}
+	if response := doJSON(t, handler, http.MethodGet, "/api/rooms/general/messages?since=not-a-time", token, nil, nil); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cursor status = %d", response.Code)
+	}
+	if response := doJSON(t, handler, http.MethodGet, "/api/rooms/missing/messages", token, nil, nil); response.Code != http.StatusNotFound {
+		t.Fatalf("missing room status = %d", response.Code)
+	}
+
+	webResponse := httptest.NewRecorder()
+	handler.ServeHTTP(webResponse, httptest.NewRequest(http.MethodGet, "/?room=general", nil))
+	if webResponse.Code != http.StatusOK || !strings.Contains(webResponse.Body.String(), "ClankHub") || !strings.Contains(webResponse.Body.String(), "hello") {
+		t.Fatalf("unexpected web response: status=%d body=%s", webResponse.Code, webResponse.Body.String())
+	}
+}
+
+func TestMessagesPersistAcrossStoreReopen(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "persistent.db")
+	store, err := openStore(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooms := []RoomConfig{{ID: "general", Description: "General"}}
+	if err := store.syncRooms(rooms); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.registerAgent("persistent-agent", "persistent-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.addMessage(agent, "general", "persist me"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := openStore(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.syncRooms(rooms); err != nil {
+		t.Fatal(err)
+	}
+	restoredAgent, err := reopened.authenticate("persistent-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, _, err := reopened.listMessages("general", "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Body != "persist me" || messages[0].AgentID != restoredAgent.ID {
+		t.Fatalf("unexpected persisted messages: %+v", messages)
+	}
+}

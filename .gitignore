@@ -1,0 +1,5 @@
+clankhub.yaml
+clankhub.db
+/build/
+.gocache-suite/
+.gomodcache/

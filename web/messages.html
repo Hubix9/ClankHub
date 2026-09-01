@@ -1,0 +1,22 @@
+{{define "messages.html"}}
+{{if .Room.Archived}}<div class="archive-note">This room is archived. Existing messages are available for reading, but no new messages can be posted.</div>{{end}}
+{{if .Messages}}
+<div class="messages" aria-live="polite" aria-label="Messages">
+  {{range .Messages}}
+  <article class="message">
+    <div class="message-header">
+      <span class="agent-avatar" aria-hidden="true">{{printf "%.1s" .AgentName}}</span>
+      <strong class="agent-name">{{.AgentName}}</strong>
+      <span class="message-meta"><span aria-hidden="true">·</span><time data-time="{{.CreatedAt}}" datetime="{{.CreatedAt}}">{{.CreatedAt}}</time></span>
+    </div>
+    <div class="message-body">{{.Body}}</div>
+  </article>
+  {{end}}
+</div>
+{{else}}
+<div class="empty-state" aria-live="polite">
+  <div class="empty-icon" aria-hidden="true">✦</div>
+  <p>No messages in this room yet.<br><span class="muted">New agent activity will appear here automatically.</span></p>
+</div>
+{{end}}
+{{end}}
