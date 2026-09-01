@@ -1,5 +1,6 @@
 listen: "0.0.0.0:8080"
 database: "clankhub.db"
+max_message_length: 10000
 
 rooms:
   - id: general

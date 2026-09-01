@@ -24,22 +24,23 @@ import (
 )
 
 const (
-	defaultConfigPath = "clankhub.yaml"
-	defaultDatabase   = "clankhub.db"
-	defaultLimit      = 200
-	maxLimit          = 1000
-	maxMessageLength  = 10000
-	maxAgentName      = 128
-	maxTokenLength    = 512
+	defaultConfigPath    = "clankhub.yaml"
+	defaultDatabase      = "clankhub.db"
+	defaultLimit         = 200
+	maxLimit             = 1000
+	defaultMessageLength = 10000
+	maxAgentName         = 128
+	maxTokenLength       = 512
 )
 
 //go:embed web/index.html web/messages.html
 var webFiles embed.FS
 
 type Config struct {
-	Listen   string       `yaml:"listen"`
-	Database string       `yaml:"database"`
-	Rooms    []RoomConfig `yaml:"rooms"`
+	Listen           string       `yaml:"listen"`
+	Database         string       `yaml:"database"`
+	MaxMessageLength int          `yaml:"max_message_length"`
+	Rooms            []RoomConfig `yaml:"rooms"`
 }
 
 type RoomConfig struct {
@@ -80,12 +81,14 @@ type MessagePage struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db               *sql.DB
+	maxMessageLength int
 }
 
 type Server struct {
-	store *Store
-	tmpl  *template.Template
+	store            *Store
+	tmpl             *template.Template
+	maxMessageLength int
 }
 
 type pageData struct {
@@ -129,6 +132,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	store.maxMessageLength = config.MaxMessageLength
 
 	if err := store.syncRooms(config.Rooms); err != nil {
 		log.Fatal(err)
@@ -139,7 +143,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	server := &Server{store: store, tmpl: tmpl}
+	server := &Server{store: store, tmpl: tmpl, maxMessageLength: config.MaxMessageLength}
 	for _, agent := range must(store.listAgents()) {
 		log.Printf("registered agent: %s", agent.Name)
 	}
@@ -172,7 +176,7 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config %q: %w", path, err)
 	}
 
-	config := Config{Listen: "0.0.0.0:8080", Database: defaultDatabase}
+	config := Config{Listen: "0.0.0.0:8080", Database: defaultDatabase, MaxMessageLength: defaultMessageLength}
 	if err := yaml.Unmarshal(contents, &config); err != nil {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
 	}
@@ -181,6 +185,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if strings.TrimSpace(config.Database) == "" {
 		return Config{}, errors.New("config database must not be empty")
+	}
+	if config.MaxMessageLength < 1 {
+		return Config{}, errors.New("config max_message_length must be a positive integer")
 	}
 	if len(config.Rooms) == 0 {
 		return Config{}, errors.New("config must define at least one room")
@@ -207,7 +214,7 @@ func openStore(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, maxMessageLength: defaultMessageLength}
 	if err := store.init(); err != nil {
 		db.Close()
 		return nil, err
@@ -426,8 +433,8 @@ func (s *Store) addMessage(agent Agent, roomID, body string) (Message, error) {
 	if body == "" {
 		return Message{}, errors.New("message body must not be empty")
 	}
-	if len(body) > maxMessageLength {
-		return Message{}, fmt.Errorf("message body must be at most %d characters", maxMessageLength)
+	if len(body) > s.maxMessageLength {
+		return Message{}, fmt.Errorf("message body must be at most %d characters", s.maxMessageLength)
 	}
 
 	room, err := s.getRoom(roomID)
@@ -639,7 +646,7 @@ func (s *Server) apiMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiRegister(w http.ResponseWriter, r *http.Request) {
 	var request registerRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := decodeJSON(r, &request, maxAgentName+maxTokenLength+1024); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -663,7 +670,7 @@ func (s *Server) apiPostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request postMessageRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := decodeJSON(r, &request, s.maxMessageLength+4096); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -698,8 +705,8 @@ func bearerToken(header string) (string, error) {
 	return parts[1], nil
 }
 
-func decodeJSON(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, maxMessageLength+2048))
+func decodeJSON(r *http.Request, target any, maxBytes int) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, int64(maxBytes)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return errors.New("request body must be valid JSON")

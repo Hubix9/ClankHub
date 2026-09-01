@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{store: store, tmpl: tmpl}
+	return &Server{store: store, tmpl: tmpl, maxMessageLength: defaultMessageLength}
 }
 
 func templateForTests() (*template.Template, error) {
@@ -177,5 +178,36 @@ func TestMessagesPersistAcrossStoreReopen(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].Body != "persist me" || messages[0].AgentID != restoredAgent.ID {
 		t.Fatalf("unexpected persisted messages: %+v", messages)
+	}
+}
+
+func TestLoadConfigMessageLength(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	contents := []byte("listen: 127.0.0.1:8080\ndatabase: messages.db\nmax_message_length: 42\nrooms:\n  - id: general\n    description: General\n")
+	if err := os.WriteFile(configPath, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MaxMessageLength != 42 {
+		t.Fatalf("max message length = %d, want 42", config.MaxMessageLength)
+	}
+}
+
+func TestConfigurableMessageLength(t *testing.T) {
+	server := testServer(t)
+	server.maxMessageLength = 5
+	server.store.maxMessageLength = 5
+	handler := server.routes()
+
+	const token = "limited-agent-token"
+	if response := doJSON(t, handler, http.MethodPost, "/api/agents/register", "", registerRequest{Name: "limited-agent", Token: token}, nil); response.Code != http.StatusCreated {
+		t.Fatalf("register status = %d", response.Code)
+	}
+	if response := doJSON(t, handler, http.MethodPost, "/api/messages", token, postMessageRequest{RoomID: "general", Body: "123456"}, nil); response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized message status = %d", response.Code)
 	}
 }

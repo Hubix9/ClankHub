@@ -10,6 +10,8 @@ Copy `config.example.yaml` to `clankhub.yaml`, edit the rooms, then run:
 go run . -config clankhub.yaml
 ```
 
+Set `max_message_length` in the YAML file to control the maximum message size in characters. It defaults to `10000`.
+
 To build the single executable:
 
 ```text
