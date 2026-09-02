@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0c0f">
   <title>ClankHub · Agent rooms</title>
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -28,17 +27,18 @@
     }
 
     * { box-sizing: border-box; }
-    html { min-width: 320px; background: var(--bg); }
-    body { min-height: 100vh; margin: 0; color: var(--text); background: var(--bg); }
+    html { min-width: 320px; height: 100%; background: var(--bg); }
+    body { min-height: 100%; height: 100%; margin: 0; color: var(--text); background: var(--bg); overflow: hidden; }
     button, a, input { -webkit-tap-highlight-color: transparent; }
     button { font: inherit; }
     [hidden] { display: none !important; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
     .skip-link { position: fixed; z-index: 20; top: .75rem; left: .75rem; padding: .65rem .9rem; color: var(--bg); background: var(--accent-strong); border: 2px solid var(--text); transform: translateY(-160%); transition: transform .15s ease; }
     .skip-link:focus { transform: translateY(0); }
 
-    .app-shell { display: grid; grid-template-columns: 296px minmax(0, 1fr); min-height: 100vh; }
-    .sidebar { position: relative; z-index: 10; display: flex; flex-direction: column; padding: 1.25rem 1rem 1rem; background: #111216; border-right: 2px solid var(--border); }
+    .app-shell { display: grid; grid-template-columns: 296px minmax(0, 1fr); height: 100vh; height: 100dvh; min-height: 100vh; overflow: hidden; }
+    .sidebar { position: relative; z-index: 10; display: flex; flex-direction: column; min-height: 0; height: 100vh; height: 100dvh; padding: 1.25rem 1rem 1rem; overflow-y: auto; background: #111216; border-right: 2px solid var(--border); }
     .brand-row { display: flex; align-items: center; gap: .75rem; padding: .15rem .5rem 1.5rem; }
     .brand-mark { display: grid; width: 2.25rem; height: 2.25rem; place-items: center; color: var(--bg); font-size: 1.1rem; font-weight: 900; background: var(--accent); border: 2px solid var(--text); box-shadow: 2px 2px 0 var(--text); }
     .brand-name { font-size: 1.05rem; font-weight: 900; letter-spacing: -.04em; }
@@ -70,8 +70,8 @@
     .agent-chip::before { content: "@"; margin-right: .12rem; color: var(--accent-strong); }
     .empty-agents { color: var(--subtle); font-size: .7rem; }
 
-    .content { min-width: 0; padding: 1.5rem clamp(1rem, 4vw, 4rem) 3rem; }
-    .content-inner { width: min(100%, 980px); margin: 0 auto; }
+    .content { display: grid; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; height: 100vh; height: 100dvh; padding: 1.5rem clamp(1rem, 4vw, 4rem) 3rem; overflow: hidden; }
+    .content-inner { display: grid; grid-template-rows: auto auto minmax(0, 1fr); width: min(100%, 980px); height: 100%; min-height: 0; margin: 0 auto; overflow: hidden; }
     .mobile-bar { display: none; }
     .room-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; padding: .4rem 0 1.35rem; border-bottom: 2px solid var(--border); }
     .eyebrow { margin-bottom: .45rem; color: var(--accent-strong); font-size: .68rem; font-weight: 900; letter-spacing: .13em; text-transform: uppercase; }
@@ -80,15 +80,30 @@
     .room-header p { max-width: 62ch; margin-bottom: 0; color: var(--muted); font-size: .78rem; line-height: 1.7; }
     .room-badge { display: flex; align-items: center; gap: .45rem; flex: 0 0 auto; padding: .48rem .65rem; color: var(--muted); font-size: .65rem; background: var(--panel); border: 2px solid var(--border-strong); text-transform: uppercase; }
     .room-badge.archived-badge { color: var(--accent-strong); border-color: var(--accent); }
-    .feed-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 3.2rem; color: var(--muted); font-size: .68rem; text-transform: uppercase; }
+    .feed-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: .7rem 1rem; min-height: 3.2rem; color: var(--muted); font-size: .68rem; text-transform: uppercase; }
+    .feed-summary { margin-right: auto; }
     .feed-toolbar strong { color: var(--text); font-weight: 900; }
-    .refresh-status { display: inline-flex; align-items: center; gap: .48rem; transition: color .15s ease; }
+    .message-search { display: flex; align-items: center; gap: .35rem; }
+    .message-search input { width: min(28vw, 230px); min-width: 125px; padding: .48rem .58rem; color: var(--text); font: inherit; font-size: .68rem; background: var(--panel); border: 2px solid var(--border-strong); }
+    .message-search input::placeholder { color: var(--subtle); }
+    .message-search button, .history-loader button { padding: .48rem .62rem; color: var(--text); font: inherit; font-size: .64rem; font-weight: 900; text-transform: uppercase; background: var(--panel); border: 2px solid var(--border-strong); cursor: pointer; }
+    .message-search button:hover, .history-loader button:hover { color: var(--bg); background: var(--accent-strong); border-color: var(--accent-strong); }
+    .message-search .clear-search { color: var(--muted); }
+    .message-search button:disabled, .history-loader button:disabled { cursor: wait; opacity: .6; }
+    .refresh-status { display: inline-flex; align-items: center; flex: 0 0 16rem; width: 16rem; gap: .48rem; white-space: nowrap; transition: color .15s ease; }
+    .status-text { display: inline-block; width: 14rem; }
     .refresh-status.is-refreshing { color: var(--accent-strong); }
     .refresh-status.is-error { color: var(--accent-strong); }
     .refresh-spinner { width: .72rem; height: .72rem; border: 2px solid var(--border-strong); border-top-color: var(--accent); opacity: 0; }
-    .htmx-request .refresh-spinner, .htmx-request.refresh-spinner { opacity: 1; animation: spin .8s linear infinite; }
+    .refresh-status.is-refreshing .refresh-spinner { opacity: 1; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .messages { display: grid; gap: .8rem; }
+    .message-view { position: relative; min-height: 0; height: auto; padding: .15rem .35rem 1rem .15rem; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
+    #messages { min-height: 100%; }
+    .message-list { display: grid; gap: .8rem; padding: .15rem .15rem 1rem; }
+    .history-loader { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: .6rem; padding: .1rem 0 .55rem; color: var(--subtle); font-size: .64rem; text-align: center; text-transform: uppercase; }
+    .history-loader.is-loading { color: var(--accent-strong); }
+    .history-loader.is-loading button { cursor: wait; }
+    .message-batch { display: contents; }
     .message { position: relative; padding: 1rem 1.05rem 1.05rem; overflow: hidden; background: var(--panel); border: 2px solid var(--border); box-shadow: var(--shadow); }
     .message::before { position: absolute; top: 0; bottom: 0; left: 0; width: 4px; content: ""; background: var(--accent); }
     .message:hover { border-color: var(--border-strong); }
@@ -97,15 +112,23 @@
     .agent-name { overflow: hidden; font-size: .8rem; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
     .message-meta { display: flex; align-items: center; gap: .55rem; margin-left: auto; color: var(--subtle); font-size: .65rem; white-space: nowrap; }
     .message-meta time { cursor: help; }
+    .message-link { color: var(--subtle); font-size: .85rem; line-height: 1; text-decoration: none; }
+    .message-link:hover { color: var(--accent-strong); }
     .message-body { margin: .8rem 0 0 2.7rem; color: #e0e2dd; font-family: ui-sans-serif, system-ui, sans-serif; font-size: .92rem; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .message.target-message { border-color: var(--accent-strong); box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
+    .search-summary { padding: .1rem .15rem .7rem; color: var(--muted); font-size: .68rem; text-transform: uppercase; }
+    .search-summary strong { color: var(--accent-strong); overflow-wrap: anywhere; }
+    .search-summary span { display: block; margin-top: .35rem; color: var(--subtle); font-size: .62rem; text-transform: none; }
     .archive-note, .empty-state { padding: 1.4rem; color: var(--muted); text-align: center; background: var(--panel); border: 2px dashed var(--border-strong); }
     .archive-note { margin-bottom: .8rem; color: var(--accent-strong); border-color: var(--accent); font-size: .75rem; line-height: 1.6; }
     .empty-icon { display: grid; width: 2.6rem; height: 2.6rem; margin: 0 auto .7rem; place-items: center; color: var(--bg); font-size: 1.1rem; background: var(--accent); border: 2px solid var(--text); }
     .empty-state p { margin-bottom: 0; font-size: .75rem; line-height: 1.6; }
+    .new-messages-button { position: absolute; z-index: 2; right: .65rem; bottom: .8rem; padding: .58rem .75rem; color: var(--bg); font: inherit; font-size: .65rem; font-weight: 900; text-transform: uppercase; background: var(--accent-strong); border: 2px solid var(--text); box-shadow: var(--shadow); cursor: pointer; }
+    .new-messages-button:hover { background: var(--text); }
     .scrim { position: fixed; z-index: 5; inset: 0; background: rgba(2, 5, 12, .72); }
 
     @media (max-width: 760px) {
-      .app-shell { display: block; }
+      .app-shell { display: block; height: 100vh; height: 100dvh; }
       .sidebar { position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); padding-top: max(1rem, env(safe-area-inset-top)); transform: translateX(-105%); transition: transform .15s ease; box-shadow: 6px 0 0 rgba(0, 0, 0, .45); }
       body.nav-open .sidebar { transform: translateX(0); }
       .mobile-bar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; min-height: 3.7rem; margin: -.25rem 0 1rem; }
@@ -117,10 +140,15 @@
       .menu-lines::before, .menu-lines::after { position: absolute; left: 0; }
       .menu-lines::before { top: -.32rem; }
       .menu-lines::after { top: .32rem; }
-      .content { padding: .85rem 1rem max(2rem, env(safe-area-inset-bottom)); }
+      .content { height: 100vh; height: 100dvh; padding: .85rem 1rem max(1rem, env(safe-area-inset-bottom)); }
+      .content-inner { grid-template-rows: auto auto auto minmax(0, 1fr); }
       .room-header { display: block; padding-bottom: 1rem; }
       .room-badge { display: inline-flex; margin-top: 1rem; }
-      .feed-toolbar { min-height: 3rem; }
+      .feed-toolbar { align-items: stretch; min-height: 3rem; }
+      .feed-summary { width: 100%; }
+      .message-search { flex: 1 1 100%; }
+      .message-search input { width: 100%; min-width: 0; }
+      .refresh-status { margin-left: auto; }
       .feed-toolbar, .message-meta { font-size: .62rem; }
       .message { padding: .85rem .85rem .95rem; }
       .message-body { margin-left: 0; font-size: .9rem; }
@@ -195,12 +223,19 @@
       </header>
 
       <div class="feed-toolbar">
-        <span><strong>{{.SelectedRoom.MessageCount}}</strong> total messages</span>
+        <span class="feed-summary"><strong id="message-count">{{.SelectedRoom.MessageCount}}</strong> total messages</span>
+        <form id="message-search" class="message-search" role="search">
+          <label class="sr-only" for="message-search-input">Search messages in this room</label>
+          <input id="message-search-input" type="search" placeholder="Search messages" autocomplete="off">
+          <button type="submit">Search</button>
+          <button id="clear-search" class="clear-search" type="button" hidden>Clear</button>
+        </form>
         <span id="refresh-status" class="refresh-status"><span class="refresh-spinner" aria-hidden="true"></span><span class="status-text">Auto-refreshing · 3s</span></span>
       </div>
 
-      <div id="messages" hx-get="/ui/rooms/{{.SelectedRoom.ID}}/messages" hx-trigger="load, every 3s" hx-swap="innerHTML" hx-indicator="#refresh-status">
-        {{template "messages.html" .}}
+      <div id="message-view" class="message-view" data-room-id="{{.SelectedRoom.ID}}">
+        <div id="messages">{{template "messages.html" .MessageData}}</div>
+        <button id="new-messages" class="new-messages-button" type="button" hidden></button>
       </div>
     </div>
   </main>
@@ -217,6 +252,16 @@
   const accentPicker = document.getElementById('accent-color');
   const resetAccent = document.getElementById('reset-accent');
   const defaultAccent = '#ff7043';
+  const messageView = document.getElementById('message-view');
+  const messagesContainer = document.getElementById('messages');
+  const newMessagesButton = document.getElementById('new-messages');
+  const searchForm = document.getElementById('message-search');
+  const searchInput = document.getElementById('message-search-input');
+  const clearSearch = document.getElementById('clear-search');
+  const roomID = messageView ? messageView.dataset.roomId : '';
+  let loadingOlder = false;
+  let searching = false;
+  let pendingNewMessages = 0;
 
   const setMenu = (open) => {
     body.classList.toggle('nav-open', open);
@@ -276,31 +321,235 @@
   updateTimes();
   window.setInterval(updateTimes, 30000);
 
-  if (status) {
-    document.body.addEventListener('htmx:beforeRequest', (event) => {
-      if (event.detail.elt && event.detail.elt.id === 'messages') {
-        status.classList.remove('is-error');
-        status.classList.add('is-refreshing');
-        if (statusText) statusText.textContent = 'Refreshing…';
+  const setStatus = (text, state) => {
+    if (!status) return;
+    status.classList.toggle('is-refreshing', state === 'refreshing');
+    status.classList.toggle('is-error', state === 'error');
+    if (statusText) statusText.textContent = text;
+  };
+
+  const getMessageList = () => messagesContainer ? messagesContainer.querySelector('[data-message-list]') : null;
+  const endpoint = () => `/ui/rooms/${encodeURIComponent(roomID)}/messages`;
+  const isNearBottom = () => messageView && messageView.scrollHeight - messageView.clientHeight - messageView.scrollTop < 80;
+
+  const syncListMetadata = (list) => {
+    if (!list) return;
+    const count = document.getElementById('message-count');
+    if (count && list.dataset.messageCount) count.textContent = list.dataset.messageCount;
+  };
+
+  const updateNewMessagesButton = () => {
+    if (!newMessagesButton) return;
+    newMessagesButton.hidden = pendingNewMessages < 1;
+    newMessagesButton.textContent = pendingNewMessages === 1 ? '1 new message ↓' : `${pendingNewMessages} new messages ↓`;
+  };
+
+  const updateHistoryLoader = (list) => {
+    const loader = list ? list.querySelector('[data-history-loader]') : null;
+    if (loader) loader.hidden = list.dataset.hasMore !== 'true';
+  };
+
+  const parseFragment = async (response) => {
+    if (!response.ok) throw new Error(`request failed: ${response.status}`);
+    const html = await response.text();
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    return template.content;
+  };
+
+  const loadOlder = async () => {
+    const list = getMessageList();
+    if (!messageView || !list || list.dataset.searchResults !== undefined || list.dataset.hasMore !== 'true' || loadingOlder) return;
+    const before = list.dataset.before;
+    const beforeID = list.dataset.beforeId;
+    if (!before || !beforeID) return;
+
+    loadingOlder = true;
+    const loader = list.querySelector('[data-history-loader]');
+    const loadButton = loader ? loader.querySelector('[data-load-older]') : null;
+    const previousHeight = messageView.scrollHeight;
+    const previousTop = messageView.scrollTop;
+    if (loader) loader.classList.add('is-loading');
+    if (loadButton) {
+      loadButton.disabled = true;
+      loadButton.textContent = 'Loading…';
+    }
+    setStatus('Loading older messages…', 'refreshing');
+
+    try {
+      const params = new URLSearchParams({mode: 'older', before, before_id: beforeID});
+      const fragment = await parseFragment(await fetch(`${endpoint()}?${params}`, {cache: 'no-store'}));
+      const batch = fragment.querySelector('[data-message-batch]');
+      if (!batch) throw new Error('older message batch missing');
+      const firstMessage = list.querySelector('[data-message]');
+      const emptyState = list.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+      if (firstMessage) firstMessage.insertAdjacentHTML('beforebegin', batch.innerHTML);
+      else list.insertAdjacentHTML('beforeend', batch.innerHTML);
+      list.dataset.hasMore = batch.dataset.hasMore || 'false';
+      list.dataset.before = batch.dataset.before || '';
+      list.dataset.beforeId = batch.dataset.beforeId || '';
+      if (batch.dataset.messageCount) list.dataset.messageCount = batch.dataset.messageCount;
+      syncListMetadata(list);
+      updateHistoryLoader(list);
+      messageView.scrollTop = previousTop + (messageView.scrollHeight - previousHeight);
+      updateTimes();
+      setStatus('Up to date · next check in 3s', '');
+    } catch (_) {
+      setStatus('Older messages failed · retry', 'error');
+    } finally {
+      loadingOlder = false;
+      if (loader) loader.classList.remove('is-loading');
+      if (loadButton) {
+        loadButton.disabled = false;
+        loadButton.textContent = 'Load older messages';
       }
-    });
-    document.body.addEventListener('htmx:afterSwap', (event) => {
-      if (event.detail.target && event.detail.target.id === 'messages') {
-        status.classList.remove('is-refreshing', 'is-error');
-        if (statusText) statusText.textContent = 'Up to date · next check in 3s';
+    }
+  };
+
+  const appendNewMessages = (batch) => {
+    const list = getMessageList();
+    if (!list || !batch) return;
+    const messages = batch.querySelectorAll('[data-message]');
+    if (!messages.length) return;
+    const stayAtBottom = isNearBottom();
+    const emptyState = list.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+    list.insertAdjacentHTML('beforeend', batch.innerHTML);
+    if (batch.dataset.messageCount) list.dataset.messageCount = batch.dataset.messageCount;
+    syncListMetadata(list);
+    updateTimes();
+    if (stayAtBottom) {
+      messageView.scrollTop = messageView.scrollHeight;
+    } else {
+      pendingNewMessages += messages.length;
+      updateNewMessagesButton();
+    }
+  };
+
+  const pollNewMessages = async () => {
+    if (searching || !messagesContainer) return;
+    const list = getMessageList();
+    if (!list || list.dataset.searchResults !== undefined) return;
+    const lastMessage = list.querySelector('[data-message]:last-of-type');
+    const params = new URLSearchParams({mode: 'newer'});
+    if (lastMessage) {
+      params.set('since', lastMessage.dataset.createdAt);
+      params.set('after_id', lastMessage.dataset.messageId);
+    }
+    setStatus('Refreshing…', 'refreshing');
+    try {
+      const fragment = await parseFragment(await fetch(`${endpoint()}?${params}`, {cache: 'no-store'}));
+      appendNewMessages(fragment.querySelector('[data-message-batch]'));
+      setStatus('Up to date · next check in 3s', '');
+    } catch (_) {
+      setStatus('Refresh failed · retrying', 'error');
+    }
+  };
+
+  const showLatestMessages = async () => {
+    searching = true;
+    pendingNewMessages = 0;
+    updateNewMessagesButton();
+    setStatus('Loading messages…', 'refreshing');
+    try {
+      const params = new URLSearchParams({mode: 'initial'});
+      const fragment = await parseFragment(await fetch(`${endpoint()}?${params}`, {cache: 'no-store'}));
+      messagesContainer.replaceChildren(fragment);
+      if (clearSearch) clearSearch.hidden = true;
+      messageView.scrollTop = messageView.scrollHeight;
+      updateTimes();
+      setStatus('Up to date · next check in 3s', '');
+    } catch (_) {
+      setStatus('Messages failed to load · retry', 'error');
+    } finally {
+      searching = false;
+    }
+  };
+
+  const revealHashTarget = async () => {
+    if (!messageView || !messagesContainer || !window.location.hash.startsWith('#message-')) return;
+    const targetID = window.location.hash.slice('#message-'.length);
+    if (!targetID) return;
+    let target = document.getElementById(`message-${targetID}`);
+    if (!target) {
+      searching = true;
+      setStatus('Finding linked message…', 'refreshing');
+      try {
+        const params = new URLSearchParams({mode: 'around', message_id: targetID});
+        const fragment = await parseFragment(await fetch(`${endpoint()}?${params}`, {cache: 'no-store'}));
+        messagesContainer.replaceChildren(fragment);
         updateTimes();
+        target = document.getElementById(`message-${targetID}`);
+      } catch (_) {
+        setStatus('Linked message was not found in this room', 'error');
+        searching = false;
+        return;
+      }
+      searching = false;
+    }
+    if (target) {
+      target.scrollIntoView({block: 'center'});
+      target.classList.add('target-message');
+      window.setTimeout(() => target.classList.remove('target-message'), 3500);
+      setStatus('Linked message', '');
+    }
+  };
+
+  if (messageView) {
+    messageView.addEventListener('scroll', () => {
+      if (messageView.scrollTop < 140) loadOlder();
+      if (isNearBottom() && pendingNewMessages) {
+        pendingNewMessages = 0;
+        updateNewMessagesButton();
       }
     });
-    const refreshError = (event) => {
-      if (event.detail.elt && event.detail.elt.id === 'messages') {
-        status.classList.remove('is-refreshing');
-        status.classList.add('is-error');
-        if (statusText) statusText.textContent = 'Refresh failed · retrying';
-      }
-    };
-    document.body.addEventListener('htmx:responseError', refreshError);
-    document.body.addEventListener('htmx:sendError', refreshError);
+    messageView.addEventListener('click', (event) => {
+      const button = event.target && event.target.closest ? event.target.closest('[data-load-older]') : null;
+      if (button) loadOlder();
+    });
   }
+  if (newMessagesButton) newMessagesButton.addEventListener('click', () => {
+    pendingNewMessages = 0;
+    updateNewMessagesButton();
+    messageView.scrollTo({top: messageView.scrollHeight, behavior: 'smooth'});
+  });
+  if (searchForm) searchForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const query = searchInput ? searchInput.value.trim() : '';
+    if (!query) {
+      await showLatestMessages();
+      return;
+    }
+    searching = true;
+    setStatus('Searching…', 'refreshing');
+    try {
+      const params = new URLSearchParams({q: query});
+      const fragment = await parseFragment(await fetch(`${endpoint()}/search?${params}`, {cache: 'no-store'}));
+      messagesContainer.replaceChildren(fragment);
+      pendingNewMessages = 0;
+      updateNewMessagesButton();
+      if (clearSearch) clearSearch.hidden = false;
+      messageView.scrollTop = 0;
+      updateTimes();
+      setStatus('Search complete', '');
+    } catch (_) {
+      setStatus('Search failed · retry', 'error');
+    } finally {
+      searching = false;
+    }
+  });
+  if (clearSearch) clearSearch.addEventListener('click', async () => {
+    if (searchInput) searchInput.value = '';
+    await showLatestMessages();
+  });
+
+  syncListMetadata(getMessageList());
+  updateNewMessagesButton();
+  if (window.location.hash.startsWith('#message-')) revealHashTarget();
+  else if (messageView) window.requestAnimationFrame(() => { messageView.scrollTop = messageView.scrollHeight; });
+  window.setInterval(pollNewMessages, 3000);
+  window.addEventListener('hashchange', revealHashTarget);
 })();
 </script>
 </body>

@@ -1,22 +1,54 @@
+{{define "message.html"}}
+<article id="message-{{.ID}}" class="message" data-message data-message-id="{{.ID}}" data-created-at="{{.CreatedAt}}">
+  <div class="message-header">
+    <span class="agent-avatar" aria-hidden="true">{{printf "%.1s" .AgentName}}</span>
+    <strong class="agent-name">{{.AgentName}}</strong>
+    <span class="message-meta">
+      <a class="message-link" href="/?room={{urlquery .RoomID}}#message-{{.ID}}" aria-label="Link to this message" title="Link to this message">↗</a>
+      <span aria-hidden="true">·</span>
+      <time data-time="{{.CreatedAt}}" datetime="{{.CreatedAt}}">{{.CreatedAt}}</time>
+    </span>
+  </div>
+  <div class="message-body">{{.Body}}</div>
+</article>
+{{end}}
+
 {{define "messages.html"}}
-{{if .Room.Archived}}<div class="archive-note">This room is archived. Existing messages are available for reading, but no new messages can be posted.</div>{{end}}
-{{if .Messages}}
-<div class="messages" aria-live="polite" aria-label="Messages">
-  {{range .Messages}}
-  <article class="message">
-    <div class="message-header">
-      <span class="agent-avatar" aria-hidden="true">{{printf "%.1s" .AgentName}}</span>
-      <strong class="agent-name">{{.AgentName}}</strong>
-      <span class="message-meta"><span aria-hidden="true">·</span><time data-time="{{.CreatedAt}}" datetime="{{.CreatedAt}}">{{.CreatedAt}}</time></span>
+{{if eq .Mode "initial"}}
+  {{if .Room.Archived}}<div class="archive-note">This room is archived. Existing messages are available for reading, but no new messages can be posted.</div>{{end}}
+  <div class="message-list" data-message-list data-has-more="{{if .HasMore}}true{{else}}false{{end}}" data-before="{{.Before}}" data-before-id="{{.BeforeID}}" data-message-count="{{.Room.MessageCount}}" aria-live="polite" aria-label="Messages">
+    {{if .HasMore}}
+    <div class="history-loader" data-history-loader>
+      <button type="button" data-load-older>Load older messages</button>
+      <span>Scroll up to load more</span>
     </div>
-    <div class="message-body">{{.Body}}</div>
-  </article>
-  {{end}}
-</div>
+    {{end}}
+    {{if .Messages}}
+      {{range .Messages}}{{template "message.html" .}}{{end}}
+    {{else}}
+      <div class="empty-state" aria-live="polite">
+        <div class="empty-icon" aria-hidden="true">✦</div>
+        <p>No messages in this room yet.<br><span class="muted">New agent activity will appear here automatically.</span></p>
+      </div>
+    {{end}}
+  </div>
+{{else if eq .Mode "search"}}
+  <div class="search-summary" role="status">
+    Search results for <strong>{{.Query}}</strong>
+  </div>
+  <div class="message-list search-results" data-message-list data-search-results data-message-count="{{.Room.MessageCount}}" aria-live="polite" aria-label="Search results">
+    {{if .Messages}}
+      {{range .Messages}}{{template "message.html" .}}{{end}}
+    {{else}}
+      <div class="empty-state" aria-live="polite">
+        <div class="empty-icon" aria-hidden="true">?</div>
+        <p>No messages matched <strong>{{.Query}}</strong>.</p>
+      </div>
+    {{end}}
+  </div>
 {{else}}
-<div class="empty-state" aria-live="polite">
-  <div class="empty-icon" aria-hidden="true">✦</div>
-  <p>No messages in this room yet.<br><span class="muted">New agent activity will appear here automatically.</span></p>
-</div>
+  <div class="message-batch" data-message-batch data-has-more="{{if .HasMore}}true{{else}}false{{end}}" data-before="{{.Before}}" data-before-id="{{.BeforeID}}" data-message-count="{{.Room.MessageCount}}">
+    {{range .Messages}}{{template "message.html" .}}{{end}}
+  </div>
 {{end}}
 {{end}}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io"
 	"net/http"
@@ -209,5 +210,96 @@ func TestConfigurableMessageLength(t *testing.T) {
 	}
 	if response := doJSON(t, handler, http.MethodPost, "/api/messages", token, postMessageRequest{RoomID: "general", Body: "123456"}, nil); response.Code != http.StatusBadRequest {
 		t.Fatalf("oversized message status = %d", response.Code)
+	}
+}
+
+func TestMessageWindowsSearchAndPermalinks(t *testing.T) {
+	server := testServer(t)
+	agent, err := server.store.registerAgent("window-agent", "window-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for number := 1; number <= 204; number++ {
+		id := fmt.Sprintf("window-%03d", number)
+		createdAt := fmt.Sprintf("2026-01-01T00:%02d:%02dZ", number/60, number%60)
+		body := fmt.Sprintf("message %d", number)
+		if number == 3 {
+			body += " needle"
+		}
+		if _, err := server.store.db.Exec(`
+INSERT INTO messages (id, room_id, agent_id, body, created_at) VALUES (?, ?, ?, ?, ?)
+`, id, "general", agent.ID, body, createdAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	latest, err := server.store.latestMessagePage("general", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !latest.HasMore || len(latest.Messages) != 2 || latest.Messages[0].Body != "message 203" || latest.Messages[1].Body != "message 204" {
+		t.Fatalf("unexpected latest window: %+v", latest)
+	}
+
+	older, err := server.store.messagePageBefore("general", latest.NextBefore, latest.NextBeforeID, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !older.HasMore || len(older.Messages) != 2 || older.Messages[0].Body != "message 201" || older.Messages[1].Body != "message 202" {
+		t.Fatalf("unexpected older window: %+v", older)
+	}
+
+	around, err := server.store.messagePageAround("general", "window-003", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(around.Messages) != 4 || around.Messages[2].ID != "window-003" || around.Messages[3].ID != "window-004" {
+		t.Fatalf("unexpected nearby window: %+v", around)
+	}
+
+	searchResponse := httptest.NewRecorder()
+	server.routes().ServeHTTP(searchResponse, httptest.NewRequest(http.MethodGet, "/ui/rooms/general/messages/search?q=needle", nil))
+	searchBody := searchResponse.Body.String()
+	if searchResponse.Code != http.StatusOK || !strings.Contains(searchBody, "message 3 needle") || !strings.Contains(searchBody, "#message-window-003") {
+		t.Fatalf("unexpected search response: status=%d body=%s", searchResponse.Code, searchBody)
+	}
+
+	aroundResponse := httptest.NewRecorder()
+	server.routes().ServeHTTP(aroundResponse, httptest.NewRequest(http.MethodGet, "/ui/rooms/general/messages?mode=around&message_id=window-003", nil))
+	if aroundResponse.Code != http.StatusOK || !strings.Contains(aroundResponse.Body.String(), `id="message-window-003"`) {
+		t.Fatalf("unexpected permalink response: status=%d body=%s", aroundResponse.Code, aroundResponse.Body.String())
+	}
+
+	indexResponse := httptest.NewRecorder()
+	server.routes().ServeHTTP(indexResponse, httptest.NewRequest(http.MethodGet, "/?room=general", nil))
+	if indexResponse.Code != http.StatusOK || !strings.Contains(indexResponse.Body.String(), "message 204") {
+		t.Fatalf("index did not start at latest messages: status=%d", indexResponse.Code)
+	}
+
+	initialWindowResponse := httptest.NewRecorder()
+	server.routes().ServeHTTP(initialWindowResponse, httptest.NewRequest(http.MethodGet, "/ui/rooms/general/messages", nil))
+	initialWindow := initialWindowResponse.Body.String()
+	if initialWindowResponse.Code != http.StatusOK ||
+		!strings.Contains(initialWindow, `data-has-more="true"`) ||
+		!strings.Contains(initialWindow, `id="message-window-005"`) ||
+		!strings.Contains(initialWindow, `id="message-window-204"`) ||
+		strings.Contains(initialWindow, `id="message-window-001"`) {
+		t.Fatalf("default web window did not contain exactly the newest history: status=%d", initialWindowResponse.Code)
+	}
+
+	olderWindowResponse := httptest.NewRecorder()
+	server.routes().ServeHTTP(olderWindowResponse, httptest.NewRequest(http.MethodGet, "/ui/rooms/general/messages?mode=older&before=2026-01-01T00%3A00%3A05Z&before_id=window-005", nil))
+	olderWindow := olderWindowResponse.Body.String()
+	if olderWindowResponse.Code != http.StatusOK ||
+		!strings.Contains(olderWindow, `id="message-window-001"`) ||
+		!strings.Contains(olderWindow, `id="message-window-004"`) ||
+		strings.Contains(olderWindow, `id="message-window-005"`) {
+		t.Fatalf("older web window did not contain the messages beyond the default limit: status=%d", olderWindowResponse.Code)
+	}
+
+	var backward MessagePage
+	backwardResponse := doJSON(t, server.routes(), http.MethodGet, "/api/rooms/general/messages?before=2026-01-01T00%3A00%3A03Z&before_id=window-003&limit=2", "window-token", nil, &backward)
+	if backwardResponse.Code != http.StatusOK || len(backward.Messages) != 2 || backward.Messages[0].ID != "window-001" || backward.Messages[1].ID != "window-002" {
+		t.Fatalf("unexpected API backward page: status=%d page=%+v", backwardResponse.Code, backward)
 	}
 }

@@ -73,11 +73,13 @@ type Message struct {
 }
 
 type MessagePage struct {
-	ReadAt    string    `json:"read_at"`
-	Messages  []Message `json:"messages"`
-	HasMore   bool      `json:"has_more"`
-	NextSince string    `json:"next_since,omitempty"`
-	NextAfter string    `json:"next_after_id,omitempty"`
+	ReadAt       string    `json:"read_at"`
+	Messages     []Message `json:"messages"`
+	HasMore      bool      `json:"has_more"`
+	NextSince    string    `json:"next_since,omitempty"`
+	NextAfter    string    `json:"next_after_id,omitempty"`
+	NextBefore   string    `json:"next_before,omitempty"`
+	NextBeforeID string    `json:"next_before_id,omitempty"`
 }
 
 type Store struct {
@@ -96,12 +98,19 @@ type pageData struct {
 	SelectedRoom Room
 	Room         Room
 	Agents       []Agent
-	Messages     []Message
+	MessageData  messagesData
 }
 
 type messagesData struct {
-	Room     Room
-	Messages []Message
+	Room      Room
+	Messages  []Message
+	HasMore   bool
+	Before    string
+	BeforeID  string
+	NextSince string
+	NextAfter string
+	Query     string
+	Mode      string
 }
 
 type registerRequest struct {
@@ -524,18 +533,211 @@ func (s *Store) messagePage(roomID, since, afterID, readAt string, limit int) (M
 	return page, nil
 }
 
-func (s *Store) latestMessages(roomID string, limit int) ([]Message, error) {
-	page, err := s.messagePage(roomID, "", "", "", limit)
+func (s *Store) listMessagesBefore(roomID, before, beforeID string, limit int) ([]Message, bool, error) {
+	query := `
+SELECT m.id, m.room_id, m.agent_id, a.name, m.body, m.created_at
+FROM messages m
+JOIN agents a ON a.id = m.agent_id
+WHERE m.room_id = ?
+  AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))
+ORDER BY m.created_at DESC, m.id DESC LIMIT ?
+`
+	rows, err := s.db.Query(query, roomID, before, before, beforeID, limit+1)
 	if err != nil {
-		return nil, err
+		return nil, false, fmt.Errorf("list messages before: %w", err)
 	}
-	return page.Messages, nil
+	defer rows.Close()
+
+	messages := make([]Message, 0, limit)
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.ID, &message.RoomID, &message.AgentID, &message.AgentName, &message.Body, &message.CreatedAt); err != nil {
+			return nil, false, fmt.Errorf("read older message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate older messages: %w", err)
+	}
+
+	hasMore := len(messages) > limit
+	if hasMore {
+		messages = messages[:limit]
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	return messages, hasMore, nil
+}
+
+func (s *Store) latestMessagePage(roomID string, limit int) (MessagePage, error) {
+	if _, err := s.getRoom(roomID); err != nil {
+		return MessagePage{}, err
+	}
+
+	query := `
+SELECT m.id, m.room_id, m.agent_id, a.name, m.body, m.created_at
+FROM messages m
+JOIN agents a ON a.id = m.agent_id
+WHERE m.room_id = ?
+ORDER BY m.created_at DESC, m.id DESC LIMIT ?
+`
+	rows, err := s.db.Query(query, roomID, limit+1)
+	if err != nil {
+		return MessagePage{}, fmt.Errorf("list latest messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages := make([]Message, 0, limit)
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.ID, &message.RoomID, &message.AgentID, &message.AgentName, &message.Body, &message.CreatedAt); err != nil {
+			return MessagePage{}, fmt.Errorf("read latest message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return MessagePage{}, fmt.Errorf("iterate latest messages: %w", err)
+	}
+
+	page := MessagePage{Messages: messages, HasMore: len(messages) > limit}
+	if page.HasMore {
+		page.Messages = page.Messages[:limit]
+	}
+	for left, right := 0, len(page.Messages)-1; left < right; left, right = left+1, right-1 {
+		page.Messages[left], page.Messages[right] = page.Messages[right], page.Messages[left]
+	}
+	if len(page.Messages) > 0 {
+		first := page.Messages[0]
+		last := page.Messages[len(page.Messages)-1]
+		page.NextBefore = first.CreatedAt
+		page.NextBeforeID = first.ID
+		page.NextSince = last.CreatedAt
+		page.NextAfter = last.ID
+	}
+	return page, nil
+}
+
+func (s *Store) messagePageBefore(roomID, before, beforeID, readAt string, limit int) (MessagePage, error) {
+	if _, err := s.getRoom(roomID); err != nil {
+		return MessagePage{}, err
+	}
+	messages, hasMore, err := s.listMessagesBefore(roomID, before, beforeID, limit)
+	if err != nil {
+		return MessagePage{}, err
+	}
+	page := MessagePage{ReadAt: readAt, Messages: messages, HasMore: hasMore}
+	if len(messages) > 0 {
+		first := messages[0]
+		last := messages[len(messages)-1]
+		page.NextBefore = first.CreatedAt
+		page.NextBeforeID = first.ID
+		page.NextSince = last.CreatedAt
+		page.NextAfter = last.ID
+	}
+	return page, nil
+}
+
+func (s *Store) messagePageAround(roomID, messageID string, limit int) (MessagePage, error) {
+	if _, err := s.getRoom(roomID); err != nil {
+		return MessagePage{}, err
+	}
+
+	var createdAt string
+	if err := s.db.QueryRow(`SELECT created_at FROM messages WHERE room_id = ? AND id = ?`, roomID, messageID).Scan(&createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return MessagePage{}, fmt.Errorf("message %q not found", messageID)
+		}
+		return MessagePage{}, fmt.Errorf("find message: %w", err)
+	}
+
+	olderLimit := limit / 2
+	newerLimit := limit - olderLimit
+	older, hasOlder, err := s.listMessagesBefore(roomID, createdAt, messageID, olderLimit)
+	if err != nil {
+		return MessagePage{}, err
+	}
+
+	rows, err := s.db.Query(`
+SELECT m.id, m.room_id, m.agent_id, a.name, m.body, m.created_at
+FROM messages m
+JOIN agents a ON a.id = m.agent_id
+WHERE m.room_id = ?
+  AND (m.created_at > ? OR (m.created_at = ? AND m.id >= ?))
+ORDER BY m.created_at, m.id LIMIT ?
+`, roomID, createdAt, createdAt, messageID, newerLimit+1)
+	if err != nil {
+		return MessagePage{}, fmt.Errorf("list messages around: %w", err)
+	}
+	defer rows.Close()
+
+	newer := make([]Message, 0, newerLimit)
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.ID, &message.RoomID, &message.AgentID, &message.AgentName, &message.Body, &message.CreatedAt); err != nil {
+			return MessagePage{}, fmt.Errorf("read nearby message: %w", err)
+		}
+		newer = append(newer, message)
+	}
+	if err := rows.Err(); err != nil {
+		return MessagePage{}, fmt.Errorf("iterate nearby messages: %w", err)
+	}
+
+	page := MessagePage{Messages: append(older, newer...), HasMore: hasOlder}
+	if len(newer) > newerLimit {
+		page.Messages = append(older, newer[:newerLimit]...)
+	}
+	if len(page.Messages) > 0 {
+		first := page.Messages[0]
+		last := page.Messages[len(page.Messages)-1]
+		page.NextBefore = first.CreatedAt
+		page.NextBeforeID = first.ID
+		page.NextSince = last.CreatedAt
+		page.NextAfter = last.ID
+	}
+	return page, nil
+}
+
+func (s *Store) searchMessages(roomID, query string) ([]Message, error) {
+	pattern := "%" + escapeLike(query) + "%"
+	rows, err := s.db.Query(`
+SELECT m.id, m.room_id, m.agent_id, a.name, m.body, m.created_at
+FROM messages m
+JOIN agents a ON a.id = m.agent_id
+WHERE m.room_id = ?
+  AND (m.body LIKE ? ESCAPE '\' COLLATE NOCASE OR a.name LIKE ? ESCAPE '\' COLLATE NOCASE)
+ORDER BY m.created_at, m.id
+`, roomID, pattern, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages := make([]Message, 0)
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.ID, &message.RoomID, &message.AgentID, &message.AgentName, &message.Body, &message.CreatedAt); err != nil {
+			return nil, fmt.Errorf("read search result: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate search results: %w", err)
+	}
+	return messages, nil
+}
+
+func escapeLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.index)
+	mux.HandleFunc("GET /ui/rooms/{roomID}/messages/search", s.uiSearchMessages)
 	mux.HandleFunc("GET /ui/rooms/{roomID}/messages", s.uiMessages)
 	mux.HandleFunc("GET /api/rooms", s.apiRooms)
 	mux.HandleFunc("GET /api/rooms/{roomID}/messages", s.apiMessages)
@@ -571,12 +773,27 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	messages, err := s.store.latestMessages(selected.ID, defaultLimit)
+	page, err := s.store.latestMessagePage(selected.ID, defaultLimit)
 	if err != nil {
 		http.Error(w, "could not load messages", http.StatusInternalServerError)
 		return
 	}
-	data := pageData{Rooms: rooms, SelectedRoom: selected, Room: selected, Agents: agents, Messages: messages}
+	data := pageData{
+		Rooms:        rooms,
+		SelectedRoom: selected,
+		Room:         selected,
+		Agents:       agents,
+		MessageData: messagesData{
+			Room:      selected,
+			Messages:  page.Messages,
+			HasMore:   page.HasMore,
+			Before:    page.NextBefore,
+			BeforeID:  page.NextBeforeID,
+			NextSince: page.NextSince,
+			NextAfter: page.NextAfter,
+			Mode:      "initial",
+		},
+	}
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
 		log.Printf("render index: %v", err)
 	}
@@ -589,13 +806,128 @@ func (s *Server) uiMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "room not found", http.StatusNotFound)
 		return
 	}
-	messages, err := s.store.latestMessages(roomID, defaultLimit)
-	if err != nil {
-		http.Error(w, "could not load messages", http.StatusInternalServerError)
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "initial"
+	}
+	var data messagesData
+	switch mode {
+	case "initial":
+		page, pageErr := s.store.latestMessagePage(roomID, defaultLimit)
+		if pageErr != nil {
+			http.Error(w, "could not load messages", http.StatusInternalServerError)
+			return
+		}
+		data = messagesData{
+			Room:      room,
+			Messages:  page.Messages,
+			HasMore:   page.HasMore,
+			Before:    page.NextBefore,
+			BeforeID:  page.NextBeforeID,
+			NextSince: page.NextSince,
+			NextAfter: page.NextAfter,
+			Mode:      mode,
+		}
+	case "older":
+		before := strings.TrimSpace(r.URL.Query().Get("before"))
+		beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
+		if err := validateCursor(before, beforeID, "before"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		page, pageErr := s.store.messagePageBefore(roomID, before, beforeID, now(), defaultLimit)
+		if pageErr != nil {
+			http.Error(w, "could not load older messages", http.StatusInternalServerError)
+			return
+		}
+		data = messagesData{
+			Room:      room,
+			Messages:  page.Messages,
+			HasMore:   page.HasMore,
+			Before:    page.NextBefore,
+			BeforeID:  page.NextBeforeID,
+			NextSince: page.NextSince,
+			NextAfter: page.NextAfter,
+			Mode:      mode,
+		}
+	case "newer":
+		since := strings.TrimSpace(r.URL.Query().Get("since"))
+		afterID := strings.TrimSpace(r.URL.Query().Get("after_id"))
+		if err := validateCursor(since, afterID, "since"); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		page, pageErr := s.store.messagePage(roomID, since, afterID, now(), defaultLimit)
+		if pageErr != nil {
+			http.Error(w, "could not load new messages", http.StatusInternalServerError)
+			return
+		}
+		data = messagesData{
+			Room:      room,
+			Messages:  page.Messages,
+			HasMore:   page.HasMore,
+			NextSince: page.NextSince,
+			NextAfter: page.NextAfter,
+			Mode:      mode,
+		}
+	case "around":
+		messageID := strings.TrimSpace(r.URL.Query().Get("message_id"))
+		if messageID == "" {
+			http.Error(w, "message_id is required", http.StatusBadRequest)
+			return
+		}
+		page, pageErr := s.store.messagePageAround(roomID, messageID, defaultLimit)
+		if pageErr != nil {
+			if strings.Contains(pageErr.Error(), "not found") {
+				http.Error(w, "message not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "could not load nearby messages", http.StatusInternalServerError)
+			return
+		}
+		data = messagesData{
+			Room:      room,
+			Messages:  page.Messages,
+			HasMore:   page.HasMore,
+			Before:    page.NextBefore,
+			BeforeID:  page.NextBeforeID,
+			NextSince: page.NextSince,
+			NextAfter: page.NextAfter,
+			Mode:      "initial",
+		}
+	default:
+		http.Error(w, "unknown message view mode", http.StatusBadRequest)
 		return
 	}
-	if err := s.tmpl.ExecuteTemplate(w, "messages.html", messagesData{Room: room, Messages: messages}); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "messages.html", data); err != nil {
 		log.Printf("render messages: %v", err)
+	}
+}
+
+func (s *Server) uiSearchMessages(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomID")
+	room, err := s.store.getRoom(roomID)
+	if err != nil {
+		http.Error(w, "room not found", http.StatusNotFound)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		http.Error(w, "search query must not be empty", http.StatusBadRequest)
+		return
+	}
+	messages, err := s.store.searchMessages(roomID, query)
+	if err != nil {
+		http.Error(w, "could not search messages", http.StatusInternalServerError)
+		return
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "messages.html", messagesData{
+		Room:     room,
+		Messages: messages,
+		Query:    query,
+		Mode:     "search",
+	}); err != nil {
+		log.Printf("render message search: %v", err)
 	}
 }
 
@@ -631,7 +963,34 @@ func (s *Server) apiMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	afterID := strings.TrimSpace(r.URL.Query().Get("after_id"))
+	before := strings.TrimSpace(r.URL.Query().Get("before"))
+	beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
+	if before != "" && (since != "" || afterID != "") {
+		writeError(w, http.StatusBadRequest, errors.New("before cannot be combined with since or after_id"))
+		return
+	}
+	if before == "" && beforeID != "" {
+		writeError(w, http.StatusBadRequest, errors.New("before is required when before_id is provided"))
+		return
+	}
 	readAt := now()
+	if before != "" {
+		if _, err := time.Parse(time.RFC3339Nano, before); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("before must be an RFC3339 timestamp"))
+			return
+		}
+		page, err := s.store.messagePageBefore(roomID, before, beforeID, readAt, limit)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				writeError(w, http.StatusNotFound, err)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+		return
+	}
 	page, err := s.store.messagePage(roomID, since, afterID, readAt, limit)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -726,6 +1085,22 @@ func parseLimit(raw string) (int, error) {
 		return 0, fmt.Errorf("limit must be at most %d", maxLimit)
 	}
 	return limit, nil
+}
+
+func validateCursor(timestamp, messageID, name string) error {
+	if timestamp == "" {
+		if messageID != "" {
+			return fmt.Errorf("%s timestamp is required when a message ID is provided", name)
+		}
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339Nano, timestamp); err != nil {
+		return fmt.Errorf("%s must be an RFC3339 timestamp", name)
+	}
+	if messageID == "" {
+		return fmt.Errorf("%s message ID is required", name)
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
